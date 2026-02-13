@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+    <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Mini-Casino World (JS Agent)</title>
+    <style>
+        body { font-family: system-ui, Arial, sans-serif; margin: 20px; max-width: 980px; }
+        h1 { margin: 0 0 8px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+        .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; }
+        label { display: block; font-size: 13px; margin-top: 8px; }
+        input { width: 100%; padding: 8px; margin-top: 4px; box-sizing: border-box; }
+        .row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+        button { padding: 10px 12px; margin-right: 8px; cursor: pointer; }
+        .muted { color: #666; font-size: 13px; }
+        pre { background: #0b1020; color: #e6e6e6; padding: 12px; border-radius: 10px; overflow:auto; min-height: 260px; }
+        .small { font-size: 12px; }
+    </style>
+    </head>
+
+
+    <body>
+
+
+        <!--   UI Content   -->
+        <div id="UI">
+            <h1>Mini-Casino World — Simple JS Agent</h1>
+            <p class="muted">
+            Costs ₱1 per play, each play is 10 seconds. Outcomes: ₱0, ₱1, ₱5, ₱100.
+            </p>
+            <div class="grid">
+            <div class="card">
+                <h3>Inputs</h3>
+                <label>Starting Money (₱)</label>
+                <input id="startMoney" type="number" min="0" value="20" />
+                <label>Total Play Time (seconds)</label>
+                <input id="playTime" type="number" min="0" value="120" />
+                <p class="muted small" style="margin-top:10px;">
+                Enter odds as <b>percent</b> per machine. Each machine must sum to 100%.
+                </p>
+                <h4>Machine 1 Odds (%)</h4>
+                <div class="row">
+                <div><label>₱0</label><input id="m1_0" type="number" min="0" value="60" /></div>
+                <div><label>₱1</label><input id="m1_1" type="number" min="0" value="30" /></div>
+                <div><label>₱5</label><input id="m1_5" type="number" min="0" value="9" /></div>
+                <div><label>₱100</label><input id="m1_100" type="number" min="0" value="1" /></div>
+                </div>
+                <h4 style="margin-top:12px;">Machine 2 Odds (%)</h4>
+                <div class="row">
+                <div><label>₱0</label><input id="m2_0" type="number" min="0" value="80" /></div>
+                <div><label>₱1</label><input id="m2_1" type="number" min="0" value="10" /></div>
+                <div><label>₱5</label><input id="m2_5" type="number" min="0" value="5" /></div>
+                <div><label>₱100</label><input id="m2_100" type="number" min="0" value="5" /></div>
+                </div>
+                <div style="margin-top:14px;">
+                <button id="runBtn">Run</button>
+                <button id="clearLogBtn">Clear Log</button>
+                <button id="resetDBBtn">Reset Agent DB</button>
+                </div>
+                <p id="status" class="muted" style="margin-top:10px;"></p>
+            </div>
+            <div class="card">
+                <h3>Agent “Database”</h3>
+                <pre id="dbView"></pre>
+            </div>
+            </div>
+            <h3 style="margin-top:16px;">Narrative Log</h3>
+            <pre id="log"></pre>
+        </div>
+
+        <!--      Logic     -->
+        <script>
+            //  shortcut to access elements by id  
+            const $ = (id) => document.getElementById(id);  
+
+            // change me if u want agent to be more desperate
+            const desperation = 10
+
+            // Database key stored in browser 
+            const DB_KEY = "miniCasinoAgentDB_v1";
+
+            //    Logs functionalities    
+            function logLine(msg) {
+                const logs = $("log");
+                logs.textContent += msg + "\n";
+                logs.scrollTop = logs.scrollHeight;
+            }
+            function setStatus(msg) {
+                $("status").textContent = msg;
+            }
+
+
+            // read and store odds 
+            function readMachineOdds(machine_ID) {
+                // inputs to const numbers 
+                const odds_0 = Number($(machine_ID + "_0").value);
+                const odds_1 = Number($(machine_ID + "_1").value);
+                const odds_5 = Number($(machine_ID + "_5").value);
+                const odds_100 = Number($(machine_ID + "_100").value);
+                const sum = odds_0 + odds_1 + odds_5 + odds_100;
+
+
+
+                if (sum !== 100) {
+                    return { ok: false, error: `${machine_ID.toUpperCase()} odds must sum to 100 (currently ${sum}).` };
+                }
+
+                return {
+                    ok: true,
+
+                    // craete array of odds(%) to decimal, used for drawPayout
+                    probs: [
+                        { payout: 0,   p: odds_0 / 100 },
+                        { payout: 1,   p: odds_1 / 100 },
+                        { payout: 5,   p: odds_5 / 100 },
+                        { payout: 100, p: odds_100 / 100 }
+                    ],
+
+                    // store checker if user changed the odds next run
+                    machineODDS: `${odds_0}|${odds_1}|${odds_5}|${odds_100}`
+                };
+            }
+
+            // draw payout using cumulative probability selection, SLOT MACHINE LOGIC
+            function drawPayout(probs) {
+
+                const r = Math.random();
+                let accumulator = 0;
+                
+                // loop through each probs entry 
+                for (const item of probs) {
+                    accumulator += item.p;
+                    if (r < accumulator) return item.payout;
+                }
+
+            }
+
+            // get expected net gain of machine 
+            function expectedNetGain(probs) {
+                let expectedValue = 0;
+                let costToPlay = 1;
+                
+                // loop through each probs entry 
+                for (const item of probs) 
+                    expectedValue += item.payout * item.p;
+                    // expectedValue = Summation(payout*probability) 
+
+                return expectedValue - costToPlay;
+            }
+
+            // load data from database 
+            function loadDB() {
+                const rawDATA = localStorage.getItem(DB_KEY);
+
+                if (!rawDATA) 
+                    // return fresh empty db 
+                    return { 
+                                m1: { 
+                                    machineODDS: null, 
+                                    games: 0, 
+                                    wins: 0 
+                                    }, 
+                                m2: { 
+                                    machineODDS: null, 
+                                    games: 0, 
+                                    wins: 0 
+                                    } 
+                            };
+                
+                const obj = JSON.parse(rawDATA);
+                return obj;
+
+            }
+
+            // convert to JSON and store 
+            function saveDB(db) {
+
+                localStorage.setItem(DB_KEY, JSON.stringify(db));
+            }
+
+            // reset db if odds change 
+            function ensureMachineOddsOrReset(db, machine_ID, newSig) {
+
+                if (db[machine_ID].machineODDS === null) {
+
+                    db[machine_ID].machineODDS = newSig;
+                    return;
+                }
+
+                if (db[machine_ID].machineODDS !== newSig) {
+
+                    db[machine_ID].machineODDS = newSig;
+                    db[machine_ID].games = 0;
+                    db[machine_ID].wins = 0;
+                } else {
+                    // do nothing
+                }
+            }
+
+            // winrate of machine from db, for desperate mode 
+            function winRate(db, machine_ID) {
+                const games = db[machine_ID].games;
+                const wins = db[machine_ID].wins;
+                return games > 0 ? (wins / games) : 0;
+            }
+
+            // render db as json in dbView element 
+            function renderDB(db) {
+                $("dbView").textContent = JSON.stringify(db, null, 2);
+            }
+
+            // format stats and log
+            function statsLine(db) {
+                const m1g = db.m1.games, m1w = db.m1.wins;
+                const m2g = db.m2.games, m2w = db.m2.wins;
+                const r1 = (winRate(db, "m1") * 100).toFixed(1);
+                const r2 = (winRate(db, "m2") * 100).toFixed(1);
+                //return ` M1: ${m1w}/${m1g} wins (${r1}%), M2: ${m2w}/${m2g} wins (${r2}%)`;
+                return "";
+            }
+
+            function chooseMachine({ mode, money, m1, m2, db }) {
+
+                // desperate mode 
+                if (mode === "desperate" || money <= desperation) {
+                    // get winrates from db 
+                    const r1 = winRate(db, "m1");
+                    const r2 = winRate(db, "m2");
+                    if (r1 === r2) return 1;
+                    return (r2 > r1) ? 2 : 1;
+                }
+
+
+
+
+                // greedy mode 
+                const g1 = expectedNetGain(m1.probs);
+                const g2 = expectedNetGain(m2.probs);
+
+                // if same net gain, choose machine 1 
+                if (g1 === g2) return 1;
+
+                // choose which machine has higher net gain, then return 
+                return (g2 > g1) ? 2 : 1;
+            }
+
+
+            // run sim 
+            function run() {
+
+                // clear output 
+                $("log").textContent = "";
+                setStatus("");
+
+                // user inputs 
+                let money = Math.floor(Number($("startMoney").value));
+                let playTime = Math.floor(Number($("playTime").value));
+
+                // input validations
+                if (!Number.isFinite(money) || money < 0) return setStatus("Starting money must be 0 or more.");
+                if (!Number.isFinite(playTime) || playTime < 0) return setStatus("Play time must be 0 or more.");
+
+                // user inputs 
+                const m1 = readMachineOdds("m1");
+                if (!m1.ok) return setStatus(m1.error);
+                const m2 = readMachineOdds("m2");
+                if (!m2.ok) return setStatus(m2.error);
+
+                // database  
+                const db = loadDB();
+                ensureMachineOddsOrReset(db, "m1", m1.machineODDS);
+                ensureMachineOddsOrReset(db, "m2", m2.machineODDS);
+                saveDB(db);
+                renderDB(db);
+
+                // playtime 
+                const turnsByTime = Math.floor(playTime / 10);
+                const totalTurns = turnsByTime;
+                if (totalTurns <= 0) {
+                    logLine("No plays possible (not enough time).");
+                    return;
+                }
+
+                // calculate turns for exploration 
+                const maxTurnsPossibleAtStart = Math.min(turnsByTime, money);
+                const exploreTurns = Math.floor(maxTurnsPossibleAtStart / 2);
+
+                // starting logs 
+                logLine(`Start: Money ₱${money}, Time ${playTime}s`);
+                logLine(`Time allows max plays: ${turnsByTime}`);
+                logLine(`Explore turns (alternating): ${exploreTurns} (half of min(time, starting money))`);
+                logLine(statsLine(db)); 
+                logLine("--------------------------------------------------");
+
+
+                let timeLeft = playTime;
+
+                // game turns loop 
+                for (let t = 1; t <= totalTurns; t++) {
+
+                    // no time no money 
+                    if (money < 1 || timeLeft < 10) {
+                        logLine(`Stop. Not enough to play. Money ₱${money}, Time left ${timeLeft}s`);
+                        break;
+                    }   
+
+                    const isExplore = (t <= exploreTurns);
+                    
+                    // rules for modes 
+                    let mode = "greedy"; //always greedy unless
+                    if (isExplore) mode = "explore";
+                    if (!isExplore && money <= desperation) mode = "desperate";
+
+                    let machine;
+
+                    // if explore 
+                    if (isExplore) {
+                        machine = (t % 2 === 1) ? 1 : 2;
+
+                    // if not explore 
+                    } else {
+                        machine = chooseMachine({ mode, money, m1, m2, db });
+                    }
+
+                    // show decision proof before next play
+                    if (!isExplore && mode === "greedy") {
+                        const g1 = expectedNetGain(m1.probs).toFixed(2);
+                        const g2 = expectedNetGain(m2.probs).toFixed(2);
+                        logLine(`Decision (GREEDY) -> expected net: M1=${g1}, M2=${g2}, chose M${machine}`);
+                    }
+                    // show decision proof before next play
+                    if (!isExplore && mode === "desperate") {
+                        const r1 = (winRate(db, "m1") * 100).toFixed(1) + "%";
+                        const r2 = (winRate(db, "m2") * 100).toFixed(1) + "%";
+                        logLine(`Decision (DESPERATE) -> win-rate from DB: M1=${r1}, M2=${r2}, chose M${machine}`);
+                    }
+
+                    // spend money and playtime 
+                    money -= 1;
+                    timeLeft -= 10;
+
+                    // play machine slots and get payout 
+                    const probs = (machine === 1) ? m1.probs : m2.probs;
+                    const payout = drawPayout(probs);
+                    money += payout;
+
+                    // update db winrate 
+                    const machID = (machine === 1) ? "m1" : "m2";
+                    db[machID].games += 1;
+                    if (payout >= 1) db[machID].wins += 1;
+
+                    //logs
+                    const tag = isExplore ? "EXPLORE" : (mode === "desperate" ? "DESPERATE" : "GREEDY");
+                    logLine(`Turn ${t}/${totalTurns} [${tag}] -> Played M${machine}, payout ₱${payout}, money now ₱${money}, time left ${timeLeft}s`);
+                    logLine(statsLine(db)); // show updated db after the play
+                    logLine("--------------------------------------------------");
+                }
+
+
+
+                saveDB(db);
+                renderDB(db);
+
+                //final logs
+                logLine(`End: Money ₱${money}, Time left ${timeLeft}s`);
+                setStatus("Done. DB updated.");
+            }
+
+            $("runBtn").addEventListener("click", run);
+
+
+            $("clearLogBtn").addEventListener("click", () => $("log").textContent = "");
+            $("resetDBBtn").addEventListener("click", () => {
+                localStorage.removeItem(DB_KEY);
+                renderDB(loadDB());
+                setStatus("Agent DB reset.");
+            });
+
+            renderDB(loadDB());
+        </script>
+
+    </body>
+</html>
